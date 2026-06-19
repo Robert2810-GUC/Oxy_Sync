@@ -71,6 +71,9 @@ const unsigned long lockoutTime   = 1800000UL; // 30 minutes
 unsigned long manualStartTime = 0;
 const unsigned long manualTimeout = 300000UL;  // 5 minutes
 
+bool pendingReboot = false;
+unsigned long rebootAt = 0;
+
 // =====================
 // SENSOR BUFFER
 // =====================
@@ -81,7 +84,7 @@ char o2_concentration[32];
 // =====================
 bool checkAuth() {
   if (!server.authenticate(www_user, www_pass)) {
-    server.requestAuthentication();
+    server.requestAuthentication(BASIC_AUTH, "OxySync");
     return false;
   }
   return true;
@@ -204,78 +207,370 @@ void readSensor() {
 // =====================
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+<meta charset="UTF-8">
 <title>OxySync</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  body { font-family: Arial; margin: 20px; background: #f4f4f4; }
-  .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
-  h1 { margin-bottom: 4px; }
-  h3 { margin-top: 0; color: #555; }
-  button { padding: 12px 18px; margin: 4px; font-size: 15px; border: none; border-radius: 6px; cursor: pointer; }
-  .btn-primary  { background: #007bff; color: white; }
-  .btn-danger   { background: #dc3545; color: white; }
-  .btn-success  { background: #28a745; color: white; }
-  .btn-warning  { background: #ffc107; color: black; }
-  .btn-secondary{ background: #6c757d; color: white; }
-  hr { margin: 16px 0; border: none; border-top: 1px solid #ddd; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:       #eef2f7;
+  --surface:  #ffffff;
+  --header:   #1c3557;
+  --border:   #cfd9e6;
+  --text:     #1c3557;
+  --sub:      #5b718a;
+  --divider:  #e4eaf2;
+
+  --c-red:    #b91c1c;
+  --c-green:  #166534;
+  --c-amber:  #92400e;
+  --c-blue:   #1e3a8a;
+  --c-purple: #5b21b6;
+  --c-gray:   #64748b;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: 'Segoe UI', system-ui, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ── HEADER ── */
+header {
+  background: var(--header);
+  color: #fff;
+  padding: 0 20px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  border-bottom: 2px solid #152a45;
+}
+.header-left {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.logo {
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  color: #ffffff;
+}
+.logo em {
+  font-style: normal;
+  color: #7dd3fc;
+}
+.header-sub {
+  font-size: 11px;
+  color: #93b8d8;
+  font-weight: 400;
+  letter-spacing: 0.3px;
+}
+.status-pill {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: #86efac;
+  background: rgba(134,239,172,0.12);
+  border: 1px solid rgba(134,239,172,0.25);
+  padding: 4px 12px;
+  border-radius: 999px;
+}
+
+/* ── MAIN GRID ── */
+main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 14px;
+  padding: 14px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ── PANELS ── */
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+/* ── CARDS ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+.card-fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.card-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--sub);
+  margin-bottom: 0;
+}
+.divider {
+  border: none;
+  border-top: 1px solid var(--divider);
+  margin: 12px 0;
+}
+
+/* ── O2 DISPLAY ── */
+.o2-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.o2-number {
+  font-size: clamp(72px, 10vw, 108px);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -3px;
+  color: var(--text);
+}
+.o2-suffix {
+  font-size: clamp(22px, 3vw, 32px);
+  font-weight: 300;
+  color: var(--sub);
+  margin-left: 4px;
+  vertical-align: bottom;
+  position: relative;
+  bottom: 10px;
+}
+.o2-caption {
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--sub);
+  margin-top: 6px;
+}
+
+/* ── SETPOINT ROW ── */
+.sp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 9px 14px;
+  margin-top: 10px;
+}
+.sp-lbl { font-size: 11px; font-weight: 600; color: var(--sub); letter-spacing: 0.3px; }
+.sp-val { font-size: 16px; font-weight: 700; color: var(--text); }
+
+/* ── STATUS ROW ── */
+.status-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+.stat {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 10px 6px;
+  text-align: center;
+}
+.stat-lbl {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--sub);
+  margin-bottom: 5px;
+}
+.stat-val {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+/* Status value colours */
+.cv-red    { color: var(--c-red); }
+.cv-green  { color: var(--c-green); }
+.cv-amber  { color: var(--c-amber); }
+.cv-blue   { color: var(--c-blue); }
+.cv-purple { color: var(--c-purple); }
+.cv-gray   { color: var(--c-gray); }
+
+/* ── BUTTONS ── */
+.btn-group {
+  display: grid;
+  gap: 8px;
+}
+.btn-group-3 { grid-template-columns: 1fr 1fr 1fr; }
+.btn-group-2 { grid-template-columns: 1fr 1fr; }
+.btn-group-1 { grid-template-columns: 1fr; }
+
+button {
+  padding: 11px 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  color: #fff;
+  transition: filter 0.12s, transform 0.08s;
+  white-space: nowrap;
+}
+button:active { transform: scale(0.97); }
+
+.b-red    { background: #c0392b; }
+.b-green  { background: #1e6b38; }
+.b-blue   { background: #1e3a8a; }
+.b-amber  { background: #92400e; }
+.b-slate  { background: #374151; }
+.b-ghost  { background: transparent; color: var(--sub); border: 1px solid var(--border); }
+
+.b-red:hover    { filter: brightness(1.12); }
+.b-green:hover  { filter: brightness(1.12); }
+.b-blue:hover   { filter: brightness(1.15); }
+.b-amber:hover  { filter: brightness(1.12); }
+.b-slate:hover  { filter: brightness(1.15); }
+.b-ghost:hover  { color: var(--text); border-color: var(--sub); }
 </style>
 </head>
 <body>
 
-<div class="card" style="text-align:center;">
-  <h1>OxySync</h1>
-  <h3>Technician Interface</h3>
-</div>
+<header>
+  <div class="header-left">
+    <span class="logo"><em>Oxy</em>Sync</span>
+    <span class="header-sub">Oxygen Safety Controller</span>
+  </div>
+  <div class="status-pill">Online</div>
+</header>
 
-<div class="card">
-  <p><b>O2 Reading:</b> <span id="o2">--</span> %</p>
-  <p><b>Setpoint:</b> <span id="sp">--</span> %</p>
-  <p><b>Relay Status:</b> <span id="relay">--</span></p>
-  <p><b>Mode:</b> <span id="mode">--</span></p>
-  <p><b>Lockout Remaining:</b> <span id="lock">--</span></p>
-</div>
+<main>
 
-<div class="card">
-  <b>Relay Control</b><hr>
-  <button class="btn-success" onclick="relayOn()">Relay ON</button>
-  <button class="btn-danger"  onclick="relayOff()">Relay OFF</button>
-  <button class="btn-primary" onclick="relayAuto()">AUTO</button>
-</div>
+  <!-- LEFT — O2 reading + status -->
+  <div class="panel">
+    <div class="card card-fill">
+      <div class="card-label">Oxygen Level</div>
 
-<div class="card">
-  <b>Sensor</b><hr>
-  <button class="btn-warning" onclick="calibrate()">Calibrate Sensor</button>
-</div>
+      <div class="o2-section">
+        <div>
+          <span class="o2-number" id="o2">--</span><span class="o2-suffix">%</span>
+        </div>
+        <div class="o2-caption">Ambient O&#8322; Concentration</div>
+      </div>
 
-<div class="card">
-  <b>System</b><hr>
-  <button class="btn-secondary" onclick="rebootController()">Reboot Controller</button>
-  <button class="btn-secondary" onclick="logout()">Logout</button>
-</div>
+      <div class="sp-row">
+        <span class="sp-lbl">Cutoff Setpoint</span>
+        <span class="sp-val"><span id="sp">--</span>%</span>
+      </div>
+
+      <div class="status-row">
+        <div class="stat">
+          <div class="stat-lbl">Relay</div>
+          <div class="stat-val" id="relay">--</div>
+        </div>
+        <div class="stat">
+          <div class="stat-lbl">Mode</div>
+          <div class="stat-val" id="mode">--</div>
+        </div>
+        <div class="stat">
+          <div class="stat-lbl">Lockout</div>
+          <div class="stat-val" id="lock">--</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT — Controls -->
+  <div class="panel">
+
+    <div class="card">
+      <div class="card-label">Relay Control</div>
+      <hr class="divider">
+      <div class="btn-group btn-group-3">
+        <button class="b-green" onclick="relayOn()">&#9650; ON</button>
+        <button class="b-red"   onclick="relayOff()">&#9660; OFF</button>
+        <button class="b-blue"  onclick="relayAuto()">&#8635; AUTO</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">Sensor</div>
+      <hr class="divider">
+      <div class="btn-group btn-group-1">
+        <button class="b-amber" onclick="calibrate()">&#9672; Calibrate Sensor</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">System</div>
+      <hr class="divider">
+      <div class="btn-group btn-group-2">
+        <button class="b-slate" onclick="rebootController()">&#8635; Reboot</button>
+        <button class="b-ghost" onclick="logout()">&#8594; Logout</button>
+      </div>
+    </div>
+
+  </div>
+
+</main>
 
 <script>
 function update() {
   fetch('/status')
-    .then(r => r.json())
-    .then(d => {
-      document.getElementById('o2').innerText   = d.o2.toFixed(2);
-      document.getElementById('sp').innerText   = d.setpoint.toFixed(2);
-      document.getElementById('relay').innerText = d.relay ? "ON" : "OFF";
-      document.getElementById('mode').innerText  = d.manual ? "MANUAL" : "AUTO";
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      document.getElementById('o2').innerText = d.o2.toFixed(2);
+      document.getElementById('sp').innerText = d.setpoint.toFixed(2);
 
-      let mins = Math.floor(d.lockout / 60);
-      let secs = d.lockout % 60;
-      document.getElementById('lock').innerText =
-        d.lockout > 0 ? mins + "m " + secs + "s" : "None";
-    });
+      var rel = document.getElementById('relay');
+      rel.innerText   = d.relay ? 'ON' : 'OFF';
+      rel.className   = 'stat-val ' + (d.relay ? 'cv-red' : 'cv-green');
+
+      var mod = document.getElementById('mode');
+      mod.innerText   = d.manual ? 'MANUAL' : 'AUTO';
+      mod.className   = 'stat-val ' + (d.manual ? 'cv-amber' : 'cv-blue');
+
+      var lck = document.getElementById('lock');
+      if (d.lockout > 0) {
+        var m = Math.floor(d.lockout / 60);
+        var s = d.lockout % 60;
+        lck.innerText = m + 'm ' + (s < 10 ? '0' : '') + s + 's';
+        lck.className = 'stat-val cv-purple';
+      } else {
+        lck.innerText = 'None';
+        lck.className = 'stat-val cv-gray';
+      }
+    })
+    .catch(function() {});
 }
 
 function calibrate() {
   fetch('/calibrate')
-    .then(r => r.text())
-    .then(t => alert(t));
+    .then(function(r) { return r.text(); })
+    .then(function(t) { alert(t); });
 }
 
 function relayOn()   { fetch('/relay?state=on').then(update); }
@@ -283,16 +578,27 @@ function relayOff()  { fetch('/relay?state=off').then(update); }
 function relayAuto() { fetch('/relay?state=auto').then(update); }
 
 function rebootController() {
-  if (confirm('Reboot controller?')) {
-    fetch('/reboot');
+  if (!confirm('Reboot the controller?')) return;
+  document.body.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100vh;background:#eef2f7;font-family:Segoe UI,Arial,sans-serif;color:#1c3557;flex-direction:column;gap:12px;';
+  document.body.innerHTML = '<div style="font-size:36px;color:#1c3557;">&#8635;</div><h2 style="font-size:18px;font-weight:700;">Rebooting&#8230;</h2><p style="color:#5b718a;font-size:13px;">Please wait. Page will reload automatically.</p>';
+  fetch('/reboot').catch(function(){});
+  var attempts = 0;
+  function pollBack() {
+    attempts++;
+    if (attempts > 30) {
+      document.body.innerHTML = '<h2 style="color:#b91c1c;">Device Not Responding</h2><p style="color:#5b718a;margin-top:8px;font-size:13px;">Please check the device and <a href="/" style="color:#1e3a8a;">try again</a>.</p>';
+      return;
+    }
+    fetch('/status').then(function(r) {
+      if (r.ok) { window.location.href = '/'; }
+      else { setTimeout(pollBack, 3000); }
+    }).catch(function() { setTimeout(pollBack, 3000); });
   }
+  setTimeout(pollBack, 5000);
 }
 
 function logout() {
-  fetch('/logout', { credentials: 'include' })
-    .then(() => {
-      window.location.href = '/';
-    });
+  window.location.href = '/logout';
 }
 
 setInterval(update, 2000);
@@ -341,7 +647,7 @@ void handleRelay() {
   if (cmd == "on") {
     state.manualOverride   = true;
     state.manualRelayState = true;
-    state.relayAutoActive  = false; // manual action — auto tracking cleared
+    state.relayAutoActive  = false;
     manualStartTime        = millis();
     setRelay(true);
     server.send(200, "text/plain", "Relay ON");
@@ -349,7 +655,7 @@ void handleRelay() {
   else if (cmd == "off") {
     state.manualOverride   = true;
     state.manualRelayState = false;
-    state.relayAutoActive  = false; // manual action — auto tracking cleared
+    state.relayAutoActive  = false;
     manualStartTime        = millis();
     setRelay(false);
     server.send(200, "text/plain", "Relay OFF");
@@ -366,16 +672,18 @@ void handleRelay() {
 
 void handleReboot() {
   if (!checkAuth()) return;
+  pendingReboot = true;
+  rebootAt      = millis() + 500;
   server.send(200, "text/plain", "Rebooting...");
-  delay(500);
-  ESP.restart();
 }
 
 void handleLogout() {
-  server.sendHeader("WWW-Authenticate", "Basic realm=\"logout\"");
+  server.sendHeader("WWW-Authenticate", "Basic realm=\"OxySync\"");
   server.send(401, "text/html",
-    "<html><body><p>Logged out.</p>"
-    "<p><a href='/'>Click here to log back in</a></p>"
+    "<!DOCTYPE html><html><head><title>Logged Out</title></head><body>"
+    "<h2>Logged Out</h2>"
+    "<p>You have been logged out of OxySync.</p>"
+    "<p><a href='/'>Click here to log in again</a></p>"
     "</body></html>"
   );
 }
@@ -410,6 +718,11 @@ void setup() {
 // =====================
 void loop() {
   server.handleClient();
+
+  // Deferred reboot — ensures HTTP response is fully sent before restart
+  if (pendingReboot && millis() >= rebootAt) {
+    ESP.restart();
+  }
 
   // Manual override timeout
   if (state.manualOverride) {

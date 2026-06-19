@@ -3,7 +3,7 @@
 **Client:** Fred Faiz
 **Team:** Bharat Sir (Megasoft)
 **Project Start:** June 14, 2026
-**Last Updated:** June 19, 2026
+**Last Updated:** June 19, 2026 (Bug fixes + UI redesign)
 
 ---
 
@@ -79,24 +79,38 @@ Fred answered all 6 clarification questions:
 - [x] Logout endpoint (`/logout`)
 
 ### Known Bugs
-- [ ] **BUG 1:** Manual relay switching (ON/OFF → AUTO) incorrectly triggers the 30-minute lockout timer
-- [ ] **BUG 2:** Reboot button not fully functional
-- [ ] **BUG 3:** Logout button redirects to `/logout` and blocks re-login unless URL is manually edited
+- [x] **BUG 1:** Manual relay switching (ON/OFF → AUTO) incorrectly triggers the 30-minute lockout timer — FIXED: `relayAutoActive` flag ensures lockout only fires when AUTO logic activated the relay; any manual ON/OFF action clears the flag first
+- [x] **BUG 2:** Reboot button not fully functional — FIXED: restart deferred to `loop()` via `pendingReboot` flag (500ms after response sent); JS now shows "Rebooting…" screen and polls `/status` every 3s until device is back, then reloads
+- [x] **BUG 3:** Logout button redirects to `/logout` and blocks re-login — FIXED: JS now navigates to `/logout` (not fetch); login and logout both use realm `"OxySync"` so the browser clears the correct credential cache; logout page body has the re-login link
 
 ---
 
 ## Task List
 
 ### Priority 1 — Bug Fixes
-- [ ] Fix lockout triggering on manual relay mode changes
-- [ ] Fix reboot button
-- [ ] Fix logout / re-login flow
+- [x] Fix lockout triggering on manual relay mode changes
+- [x] Fix reboot button
+- [x] Fix logout / re-login flow
 
 ### Priority 2 — Major New Features
 - [ ] **Watchdog Timer** — hardware-level recovery if MCU or sensor locks up
 - [ ] **Sensor Drift Tracking** — log readings over time, flag sensor for replacement
 - [ ] **Live Sensor Status** — display on dashboard: OK / Disconnected / Stuck / Sleeping
 - [ ] **Event Log** — timestamped log of relay changes, lockouts, calibrations, reboots (persist 30 days, survives reboot)
+
+---
+
+## Testing Workflow (IMPORTANT)
+
+1. **Load `oxysync_wokwi.ino` into Wokwi** with `wokwi/diagram.json`
+2. Open the dashboard at `192.168.4.1`, log in with `tech` / `oxygen`
+3. Use the **Simulator card** (slider) to set O2 below 20.9% → confirm relay activates
+4. Raise O2 above 20.9% → confirm relay deactivates and lockout starts
+5. Test manual ON/OFF → AUTO without lockout triggering
+6. Test logout → confirm login prompt appears on return to `/`
+7. Test reboot → confirm page shows "Rebooting…" and auto-reloads when device is back
+8. **Only after all above pass** → flash `oxysync_production.ino` to real hardware
+9. Test once on real hardware, then send to Fred for client testing
 
 ---
 
@@ -110,11 +124,17 @@ Fred answered all 6 clarification questions:
 
 ---
 
+## Current Status
+
+**Waiting for Fred's feedback on bug-fix + UI release (sent ~Jun 19, 2026)**
+- P2 features on hold until client confirms the bug fixes work on real hardware
+- This also establishes how Fred reports issues — useful before adding bigger features
+
 ## Open Questions / Next Steps
 
-1. Has any new code been written or shared after June 16?
-2. Which task does Bharat want to tackle first — bug fixes or major features?
-3. Sensor drift threshold — need to review the Atlas Scientific EZO O2 datasheet to define a reasonable default
+1. Wait for Fred's response on bug fixes — does he test thoroughly or just quick check?
+2. Sensor drift threshold — review Atlas Scientific EZO O2 datasheet before implementing drift tracking
+3. Once Fred confirms → decide which P2 feature to tackle first
 
 ---
 
@@ -125,4 +145,7 @@ Fred answered all 6 clarification questions:
 | Jun 14, 2026 | Fred | Bharat | Initial requirements + old code |
 | Jun 14, 2026 | Bharat | Fred | Code review summary + 6 questions |
 | Jun 16, 2026 | Fred | Bharat | Answers to all 6 questions + sensor script |
+| Jun 19, 2026 | Claude | Bharat | All 3 P1 bugs fixed in both production and Wokwi firmware |
+| Jun 19, 2026 | Claude | Bharat | UI redesigned v2 — two-column no-scroll layout, navy/white formal palette, full-width, color only on status values |
+| Jun 19, 2026 | Bharat | Fred   | Sent production firmware for client testing — bug fixes + UI redesign. P2 features on hold pending feedback. |
 

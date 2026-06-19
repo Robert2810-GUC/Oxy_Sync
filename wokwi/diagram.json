@@ -13,39 +13,39 @@
     {
       "type": "wokwi-led",
       "id": "relay_led",
-      "top": 80,
-      "left": 220,
-      "attrs": { "color": "red", "label": "RELAY" }
+      "top": 60,
+      "left": 240,
+      "attrs": { "color": "red", "label": "RELAY ON" }
     },
     {
       "type": "wokwi-led",
       "id": "status_led",
-      "top": 140,
-      "left": 220,
-      "attrs": { "color": "green", "label": "STATUS" }
+      "top": 130,
+      "left": 240,
+      "attrs": { "color": "green", "label": "POWER" }
     },
     {
       "type": "wokwi-resistor",
       "id": "r1",
-      "top": 80,
-      "left": 180,
+      "top": 60,
+      "left": 190,
       "attrs": { "value": "1000" }
     },
     {
       "type": "wokwi-resistor",
       "id": "r2",
-      "top": 140,
-      "left": 180,
+      "top": 130,
+      "left": 190,
       "attrs": { "value": "1000" }
     }
   ],
   "connections": [
-    [ "esp32:GPIO27", "r1:1", "orange", [] ],
-    [ "r1:2", "relay_led:A", "orange", [] ],
-    [ "relay_led:C", "esp32:GND.1", "black", [] ],
-    [ "esp32:GPIO2", "r2:1", "green", [] ],
-    [ "r2:2", "status_led:A", "green", [] ],
-    [ "status_led:C", "esp32:GND.1", "black", [] ]
+    [ "esp32:3V3",    "r1:1",          "orange", [] ],
+    [ "r1:2",         "relay_led:A",   "orange", [] ],
+    [ "relay_led:C",  "esp32:GPIO27",  "orange", [] ],
+    [ "esp32:3V3",    "r2:1",          "green",  [] ],
+    [ "r2:2",         "status_led:A",  "green",  [] ],
+    [ "status_led:C", "esp32:GND.1",   "black",  [] ]
   ],
   "dependencies": {}
 }
