@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "author": "OxySync / Megasoft",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-esp32-devkit-v1",
+      "id": "esp32",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-led",
+      "id": "relay_led",
+      "top": 80,
+      "left": 220,
+      "attrs": { "color": "red", "label": "RELAY" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "status_led",
+      "top": 140,
+      "left": 220,
+      "attrs": { "color": "green", "label": "STATUS" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r1",
+      "top": 80,
+      "left": 180,
+      "attrs": { "value": "1000" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r2",
+      "top": 140,
+      "left": 180,
+      "attrs": { "value": "1000" }
+    }
+  ],
+  "connections": [
+    [ "esp32:GPIO27", "r1:1", "orange", [] ],
+    [ "r1:2", "relay_led:A", "orange", [] ],
+    [ "relay_led:C", "esp32:GND.1", "black", [] ],
+    [ "esp32:GPIO2", "r2:1", "green", [] ],
+    [ "r2:2", "status_led:A", "green", [] ],
+    [ "status_led:C", "esp32:GND.1", "black", [] ]
+  ],
+  "dependencies": {}
+}

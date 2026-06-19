@@ -1,0 +1,141 @@
+#include <Wire.h>
+#include "BluetoothSerial.h"
+
+#define EZO_O2_ADDRESS 0x6C
+#define SDA_PIN 21
+#define SCL_PIN 22
+
+BluetoothSerial SerialBT;
+char o2_concentration[32];
+
+unsigned long lastReadTime = 0;
+const unsigned long readInterval = 20000;
+bool sensorSleeping = false;
+
+// ================================
+// 🧠 Safely send command to O2 sensor and read result
+// ================================
+String sendToSensor(const String& cmd, int delayAfter = 900) {
+  Wire.beginTransmission(EZO_O2_ADDRESS);
+  Wire.write((const uint8_t*)cmd.c_str(), cmd.length());
+  Wire.endTransmission();
+
+  delay(delayAfter);
+
+  int len = Wire.requestFrom(EZO_O2_ADDRESS, sizeof(o2_concentration) - 1);
+  int index = 0;
+  while (Wire.available() && index < sizeof(o2_concentration) - 1) {
+    char c = Wire.read();
+    if (isPrintable(c)) {
+      o2_concentration[index++] = c;
+    }
+  }
+  o2_concentration[index] = '\0';
+  return String(o2_concentration);
+}
+
+// ================================
+// 🧾 Format JSON-style response
+// ================================
+void sendFormatted(Stream &stream, const String& type, const String& value) {
+  String json = "{\"type\":\"" + type + "\",\"o2\":\"" + value + "\"}";
+  // stream.println(json);
+  // Serial.println(json);
+  SerialBT.println(json);
+
+}
+
+// ================================
+// 🔄 Handle incoming command from user (via USB or BT)
+// ================================
+void processCommand(String cmd, Stream &stream) {
+  cmd.trim();
+  cmd.toUpperCase();
+
+  Serial.print("[ESP32] Received: ");
+  Serial.println(cmd);
+
+  String response;
+
+  if (cmd == "SLEEP") {
+    sendToSensor("Sleep", 300);
+    sensorSleeping = true;
+    response = "Sensor put to sleep";
+  } else if (cmd == "WAKE") {
+    Wire.beginTransmission(EZO_O2_ADDRESS);
+    Wire.write(0x00); // Dummy write to wake
+    Wire.endTransmission();
+    delay(300);
+    sensorSleeping = false;
+    response = "Sensor wake signal sent";
+  } else if (cmd == "CAL,CLEAR" || cmd.startsWith("CAL,")) {
+    response = sendToSensor(cmd, 1300);
+  } else if (cmd == "CAL,?") {
+    response = sendToSensor(cmd, 300);
+  } else if (cmd == "R") {
+    response = sendToSensor("R", 900);
+  } else {
+    response = "❌ Unknown command: " + cmd;
+  }
+
+  // Send command response in a clean JSON format
+  sendFormatted(stream, "response", response);
+}
+
+// ================================
+// 📩 Check both USB + BT inputs
+// ================================
+void checkIncoming(Stream &stream) {
+  if (stream.available()) {
+    String cmd = stream.readStringUntil('\n');
+    processCommand(cmd, stream);
+
+    // 🔄 Show updated O2 reading
+    delay(500);
+    String fresh = sendToSensor("R", 900);
+    sendFormatted(stream, "reading", fresh);
+  }
+}
+
+// ================================
+// ⏱️ Read O2 every 20 sec
+// ================================
+void autoReadSensor() {
+  if (sensorSleeping) return;
+
+  if (millis() - lastReadTime >= readInterval) {
+    String autoReading = sendToSensor("R", 900);
+    String formatted = "Auto O2: " + autoReading;
+    Serial.println(formatted);
+    SerialBT.println(formatted);
+
+    if (SerialBT.hasClient()) {
+      sendFormatted(SerialBT, "auto", autoReading);
+    }
+
+    lastReadTime = millis();
+  }
+}
+
+// ================================
+
+// 🚀 Setup
+// ================================
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(SDA_PIN, SCL_PIN);
+  SerialBT.begin("ESP32_209");  // Initialize Bluetooth with device name (change this BLE name as per device, e.g., ESP32_Master, ESP32_jr_master, etc.)  BLE name (change as per Raspberry Pi location, e.g., 112, 118 etc.)
+
+  Serial.println("✅ ESP32 Ready - Listening for Bluetooth and Serial...");
+}
+
+// ================================
+// 🔁 Main Loop
+// ================================
+void loop() {
+  if (Serial) {  // only when USB is connected
+    checkIncoming(Serial);
+  }
+  checkIncoming(SerialBT);
+  autoReadSensor();
+}

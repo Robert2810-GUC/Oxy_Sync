@@ -1,0 +1,129 @@
+[10:07 pm, 14/6/2026] Fred Faiz: Requirements:
+[10:07 pm, 14/6/2026] Fred Faiz: Fred,
+Thank you for your time today.  I look forward to future collaboration.  I have some basic code skills, but I think having a professional look at this would be very helpful.  I have attached a text document with what I have currently.  
+
+To summarize our conversation, we are looking to provide a new product to our customers.  There is some new legal code requiring a safety cutoff for areas that have artificial ambient oxygen saturation.  This is designed to fill that void without having to redo the entire oxygen control system.  This will be a standalone device that can be added to any current setup.
+
+The way I want this safety device to work is to monitor the oxygen saturation level.  When the oxygen is below the setpoint, it will trigger a relay.  The relay will remain active until the oxygen reaches the setpoint and deactivates the relay for 30 minutes, to allow the oxygen level to drop.  
+
+We currently use the ESP32 Devkit V1 microcontroller and the Atlas Scientific ENO-02 sensor for our oxygen system.  The ESP32 microcontroller has a feature where it can act as a WI-FI access point.  You can use this feature to log into it.  The WI-FI network created by this setup is called O2_Controller and the password is: techonly123.  I have set this up and created a login page.  The user name for the login page is: tech and the password is: oxygen (There will be projects with multiples of these devices I them, so we will need to have a unique name for each one).  From there, you can see the sensor information, the relay state, and lockout time remaining.
+
+Items remaining to do: 
+
+Because this is a safety device, we need to look into adding some watchguard features to monitor the microcontroller and sensor from locking up. 
+
+A way to track the sensor readings for signs of drift to indicate the need for replacement. There should also be a section on the 
+
+ Live sensor status.  If the sensor okay, disconnected, stuck, or in some other state, it would be helpful if this was displayed.
+
+Add an event log. 
+
+There are a few bugs I am working on.  One of those when switching between the relay states in the Technician Interface screen, it seems to trigger the lockout timer.  Also, I haven't finished setting up the reboot button and the logout button opens another page and doesn't allow for logging back in unless you delete the logout portion of the url.  
+
+These are the items I feel are most important currently.  I would welcome input on additional features or tweaks you recommend.
+[10:07 pm, 14/6/2026] Fred Faiz: Major Task
+[10:07 pm, 14/6/2026] Fred Faiz: Because this is a safety device, we need to look into adding some watchguard features to monitor the microcontroller and sensor from locking up. 
+
+A way to track the sensor readings for signs of drift to indicate the need for replacement. There should also be a section on the 
+
+ Live sensor status.  If the sensor okay, disconnected, stuck, or in some other state, it would be helpful if this was displayed.
+
+Add an event log.
+
+[10:33 pm, 14/6/2026] Bharat Sir Megasoft: Subject: OxySync Project — Code Review Summary & Clarification Questions
+
+PROJECT UNDERSTANDING
+
+The OxySync device is a standalone safety controller designed to monitor ambient oxygen saturation levels in environments where oxygen is artificially elevated. The device is intended to comply with new legal safety requirements without requiring modification to existing oxygen control systems.
+
+The device works as follows:
+- Continuously monitors O2 levels using the Atlas Scientific ENO-02 sensor
+- When O2 drops below the configured setpoint (default 20.9%), the relay activates
+- Once O2 reaches the setpoint, the relay deactivates and a 30-minute lockout begins to allow levels to stabilize naturally
+- A technician can connect to the device via its own WiFi network (O2_Controller) and access a web-based dashboard to monitor status and perform manual controls
+
+---
+
+CODE REVIEW FINDINGS
+
+After reviewing the existing code, here is what is currently implemented and working:
+
+- Core relay logic (activate/deactivate based on O2 setpoint)
+- 30-minute lockout timer after relay deactivation
+- Web dashboard with Basic Auth login (tech/oxygen)
+- Manual relay override with 5-minute auto-timeout
+- WiFi Access Point mode (O2_Controller / techonly123)
+- Bluetooth Serial interface for technician commands
+- Real I2C sensor communication with Atlas Scientific ENO-02
+- Calibration command via dashboard
+
+Note: The current code contains a hardcoded O2 value of 19.5% in the readSensor() function, which appears to be a temporary placeholder for simulator testing. We will keep this in mind during development.
+
+---
+
+CLIENT REQUIREMENTS — AS UNDERSTOOD
+
+Bug Fixes Required:
+1. Manual relay switching (ON/OFF/AUTO) incorrectly triggers the 30-minute lockout timer
+2. Reboot button on dashboard is not fully functional
+3. Logout button redirects to /logout URL and does not allow re-login unless the URL is manually changed
+
+New Features Required:
+1. Watchdog timer — hardware-level monitoring to automatically recover if the microcontroller or sensor locks up
+2. Sensor drift tracking — log readings over time and flag when drift indicates the sensor may need replacement
+3. Live sensor status display — show current sensor state on dashboard (OK / Disconnected / Stuck / Sleeping)
+4. Event log — timestamped record of key events such as relay changes, lockouts, calibrations, and reboots
+
+---
+
+CLARIFICATION QUESTIONS
+
+Before we begin development, we have a few questions to ensure we deliver exactly what you need:
+
+1. Sensor Reading Code — The current code has a hardcoded value of 19.5% in place of a real sensor read. Do you have existing working code for the real I2C sensor read that we should integrate, or would you like us to build that from scratch?
+
+2. WiFi Access Point — The current Wokwi test version connects to an external network. We understand the production version should create its own O2_Controller network. Can you confirm this is already working on your hardware, or should we ensure this is included in the final code?
+
+3. Setpoint Adjustment — The setpoint is currently hardcoded at 20.9%. Should technicians be able to adjust this from the dashboard, or should it remain fixed?
+
+4. Unique Device Naming — You mentioned projects may have multiple devices. How should each device be identified? Should the device name be set manually during setup, or generated automatically?
+
+5. Event Log Persistence — Should the event log survive a device reboot, or is it acceptable for it to clear on restart?
+
+6. Sensor Drift Threshold — At what point should the system flag a sensor as drifting and needing replacement? Do you have a specific tolerance value in mind, or should we define a reasonable default?
+[10:35 pm, 14/6/2026] Bharat Sir Megasoft: @Fred Faiz sir
+[11:04 pm, 14/6/2026] Fred Faiz: Sent
+👍🏼
+[12:00 pm, 16/6/2026] Fred Faiz: Fred,
+Below are my responses to your qustions.
+
+1. Sensor Reading Code — The current code has a hardcoded value of 19.5% in place of a real sensor read. Do you have existing working code for the real I2C sensor read that we should integrate, or would you like us to build that from scratch?
+
+I will attach a text document to this email with the current sensor code.  Keep in mind it is setup to work in conjunction with the oxygen control system so you'll need to modify it for this project.
+
+2. WiFi Access Point — The current Wokwi test version connects to an external network. We understand the production version should create its own O2_Controller network. Can you confirm this is already working on your hardware, or should we ensure this is included in the final code?
+
+Yes.  Once you connect using the access point, they open a browser.  From there you navigate to the IP address: 192.168.4.1, and the dashboard will open.
+
+3. Setpoint Adjustment — The setpoint is currently hardcoded at 20.9%. Should technicians be able to adjust this from the dashboard, or should it remain fixed?
+
+I can hardcode it per unit, but having the ability to change the percentage in the field would make for fewer issues requiring the device be returned to the manufacture.
+
+4. Unique Device Naming — You mentioned projects may have multiple devices. How should each device be identified? Should the device name be set manually during setup, or generated automatically?
+
+I will name each device as I upload them.  The customer will provide job and room names to me as they place orders.
+
+5. Event Log Persistence — Should the event log survive a device reboot, or is it acceptable for it to clear on restart?
+
+It will need to survive a device restart.  I don't see a need to have more than 30 days worth of log data saved so it will need to keep deleting data older than that to keep space free.
+
+6. Sensor Drift Threshold — At what point should the system flag a sensor as drifting and needing replacement? Do you have a specific tolerance value in mind, or should we define a reasonable default?
+
+I am not sure exactly to define the replacement standard.  Whatever you can suggest would probably be okay.  The link below is the datasheet for the sensor.  Maybe there is something in there that can answer your question.
+
+https://files.atlas-scientific.com/EZO_O2_P_datasheet.pdf
+
+
+Pleases let me know if this answers your questions and if you have any more.  I have attached the sensor script to this email as well.
+
+
