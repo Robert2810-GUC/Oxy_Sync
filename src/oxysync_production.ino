@@ -9,6 +9,7 @@
 #include <Wire.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <esp_task_wdt.h>
 
 // =====================
 // SENSOR CONFIG
@@ -70,6 +71,9 @@ const unsigned long lockoutTime   = 1800000UL; // 30 minutes
 
 unsigned long manualStartTime = 0;
 const unsigned long manualTimeout = 300000UL;  // 5 minutes
+
+// Watchdog: reboot if loop stalls longer than this (sensor I2C hang, etc.)
+const uint32_t WDT_TIMEOUT_SEC = 30;
 
 bool pendingReboot = false;
 unsigned long rebootAt = 0;
@@ -695,6 +699,9 @@ void setup() {
   Serial.begin(115200);
   Wire.begin(SDA_PIN, SCL_PIN);
 
+  esp_task_wdt_init(WDT_TIMEOUT_SEC, true); // true = panic/reboot on timeout
+  esp_task_wdt_add(NULL);                   // watch the main loop task
+
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, LOW); // OFF (active-high)
 
@@ -717,6 +724,7 @@ void setup() {
 // LOOP
 // =====================
 void loop() {
+  esp_task_wdt_reset();
   server.handleClient();
 
   // Deferred reboot — ensures HTTP response is fully sent before restart
