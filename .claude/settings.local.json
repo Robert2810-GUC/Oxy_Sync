@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(Move-Item *)"
+      "PowerShell(Move-Item *)",
+      "WebFetch(domain:www.dfrobot.com)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

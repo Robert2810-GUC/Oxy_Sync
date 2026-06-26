@@ -9,9 +9,9 @@
 // DO NOT FLASH THIS TO REAL DEVICE. Use oxysync_production.ino.
 // =====================================================================
 
-#include <Wire.h>
-#include <WiFi.h>
 #include <WebServer.h>
+#include <WiFi.h>
+#include <Wire.h>
 
 // =====================
 // SENSOR CONFIG
@@ -28,14 +28,14 @@
 // =====================
 // WIFI AP CONFIG
 // =====================
-const char* ap_ssid     = "O2_Controller";
-const char* ap_password = "techonly123";
+const char *ap_ssid = "O2_Controller";
+const char *ap_password = "techonly123";
 
 // =====================
 // BASIC AUTH
 // =====================
-const char* www_user = "tech";
-const char* www_pass = "oxygen";
+const char *www_user = "tech";
+const char *www_pass = "oxygen";
 
 // =====================
 // GLOBAL OBJECTS
@@ -54,20 +54,20 @@ float SIM_O2_VALUE = 19.5;
 // SYSTEM STATE
 // =====================
 struct SystemState {
-  float   o2Value        = 0.0;
-  float   setpoint       = 20.9;
-  bool    relayOn        = false;
-  bool    sensorSleeping = false;
+  float o2Value = 0.0;
+  float setpoint = 20.9;
+  bool relayOn = false;
+  bool sensorSleeping = false;
 
-  bool    lockoutActive  = false;
+  bool lockoutActive = false;
   unsigned long lockoutStart = 0;
 
-  bool    manualOverride    = false;
-  bool    manualRelayState  = false;
+  bool manualOverride = false;
+  bool manualRelayState = false;
 
   // True only when AUTO logic turned the relay on.
   // Lockout must never trigger from a manual relay action.
-  bool    relayAutoActive = false;
+  bool relayAutoActive = false;
 };
 
 SystemState state;
@@ -75,12 +75,12 @@ SystemState state;
 // =====================
 // TIMING
 // =====================
-unsigned long lastReadTime  = 0;
-const unsigned long readInterval  = 10000UL;   // 10 seconds
-const unsigned long lockoutTime   = 1800000UL; // 30 minutes
+unsigned long lastReadTime = 0;
+const unsigned long readInterval = 10000UL;  // 10 seconds
+const unsigned long lockoutTime = 1800000UL; // 30 minutes
 
 unsigned long manualStartTime = 0;
-const unsigned long manualTimeout = 300000UL;  // 5 minutes
+const unsigned long manualTimeout = 300000UL; // 5 minutes
 
 bool pendingReboot = false;
 unsigned long rebootAt = 0;
@@ -104,7 +104,7 @@ void setRelay(bool on) {
     digitalWrite(RELAY_PIN, LOW);
     state.relayOn = true;
     state.lockoutActive = false;
-    state.lockoutStart  = 0;
+    state.lockoutStart = 0;
   } else {
     digitalWrite(RELAY_PIN, HIGH);
     state.relayOn = false;
@@ -116,11 +116,12 @@ void setRelay(bool on) {
 // =====================
 void startLockout() {
   state.lockoutActive = true;
-  state.lockoutStart  = millis();
+  state.lockoutStart = millis();
 }
 
 bool lockoutExpired() {
-  if (!state.lockoutActive) return true;
+  if (!state.lockoutActive)
+    return true;
   if (millis() - state.lockoutStart >= lockoutTime) {
     state.lockoutActive = false;
     return true;
@@ -129,8 +130,10 @@ bool lockoutExpired() {
 }
 
 unsigned long lockoutRemaining() {
-  if (!state.lockoutActive) return 0;
-  if (lockoutExpired())     return 0;
+  if (!state.lockoutActive)
+    return 0;
+  if (lockoutExpired())
+    return 0;
   return lockoutTime - (millis() - state.lockoutStart);
 }
 
@@ -164,7 +167,8 @@ void evaluateRelay() {
 // SIMULATED SENSOR READ
 // =====================
 void readSensor() {
-  if (state.sensorSleeping) return;
+  if (state.sensorSleeping)
+    return;
   state.o2Value = SIM_O2_VALUE;
   Serial.println("[SIM] O2 value: " + String(state.o2Value, 2) + "%");
   evaluateRelay();
@@ -617,91 +621,97 @@ update();
 // WEB HANDLERS
 // =====================
 void handleRoot() {
-  if (!checkAuth()) return;
+  if (!checkAuth())
+    return;
   server.send_P(200, "text/html", index_html);
 }
 
 void handleStatus() {
-  if (!checkAuth()) return;
+  if (!checkAuth())
+    return;
 
   String json = "{";
-  json += "\"o2\":"       + String(state.o2Value, 2)   + ",";
-  json += "\"setpoint\":" + String(state.setpoint, 2)  + ",";
-  json += "\"relay\":"    + String(state.relayOn ? "true" : "false") + ",";
-  json += "\"lockout\":"  + String(lockoutRemaining() / 1000)        + ",";
-  json += "\"manual\":"   + String(state.manualOverride ? "true" : "false");
+  json += "\"o2\":" + String(state.o2Value, 2) + ",";
+  json += "\"setpoint\":" + String(state.setpoint, 2) + ",";
+  json += "\"relay\":" + String(state.relayOn ? "true" : "false") + ",";
+  json += "\"lockout\":" + String(lockoutRemaining() / 1000) + ",";
+  json += "\"manual\":" + String(state.manualOverride ? "true" : "false");
   json += "}";
 
   server.send(200, "application/json", json);
 }
 
 void handleCalibrate() {
-  if (!checkAuth()) return;
-  server.send(200, "text/plain", "[SIM] Calibration command sent. Reading: " + String(state.o2Value, 2) + "%");
+  if (!checkAuth())
+    return;
+  server.send(200, "text/plain",
+              "[SIM] Calibration command sent. Reading: " +
+                  String(state.o2Value, 2) + "%");
 }
 
 // Wokwi-only: set the simulated O2 value from the browser
 void handleSetSim() {
-  if (!checkAuth()) return;
+  if (!checkAuth())
+    return;
   if (server.hasArg("o2")) {
     SIM_O2_VALUE = server.arg("o2").toFloat();
     Serial.println("[SIM] O2 value set to: " + String(SIM_O2_VALUE, 2) + "%");
-    server.send(200, "text/plain", "SIM O2 set to " + String(SIM_O2_VALUE, 2) + "%");
+    server.send(200, "text/plain",
+                "SIM O2 set to " + String(SIM_O2_VALUE, 2) + "%");
   } else {
     server.send(400, "text/plain", "Missing ?o2= parameter");
   }
 }
 
 void handleRelay() {
-  if (!checkAuth()) return;
+  if (!checkAuth())
+    return;
 
   String cmd = server.arg("state");
 
   if (cmd == "on") {
-    state.manualOverride   = true;
+    state.manualOverride = true;
     state.manualRelayState = true;
-    state.relayAutoActive  = false;
-    manualStartTime        = millis();
+    state.relayAutoActive = false;
+    manualStartTime = millis();
     setRelay(true);
     Serial.println("[MANUAL] Relay forced ON by technician");
     server.send(200, "text/plain", "Relay ON");
-  }
-  else if (cmd == "off") {
-    state.manualOverride   = true;
+  } else if (cmd == "off") {
+    state.manualOverride = true;
     state.manualRelayState = false;
-    state.relayAutoActive  = false;
-    manualStartTime        = millis();
+    state.relayAutoActive = false;
+    manualStartTime = millis();
     setRelay(false);
     Serial.println("[MANUAL] Relay forced OFF by technician");
     server.send(200, "text/plain", "Relay OFF");
-  }
-  else if (cmd == "auto") {
+  } else if (cmd == "auto") {
     state.manualOverride = false;
     evaluateRelay();
     Serial.println("[MANUAL] Switched to AUTO mode");
     server.send(200, "text/plain", "AUTO MODE");
-  }
-  else {
+  } else {
     server.send(400, "text/plain", "Bad Command");
   }
 }
 
 void handleReboot() {
-  if (!checkAuth()) return;
+  if (!checkAuth())
+    return;
   pendingReboot = true;
-  rebootAt      = millis() + 500;
+  rebootAt = millis() + 500;
   server.send(200, "text/plain", "Rebooting...");
 }
 
 void handleLogout() {
   server.sendHeader("WWW-Authenticate", "Basic realm=\"OxySync\"");
-  server.send(401, "text/html",
-    "<!DOCTYPE html><html><head><title>Logged Out</title></head><body>"
-    "<h2>Logged Out</h2>"
-    "<p>You have been logged out of OxySync.</p>"
-    "<p><a href='/'>Click here to log in again</a></p>"
-    "</body></html>"
-  );
+  server.send(
+      401, "text/html",
+      "<!DOCTYPE html><html><head><title>Logged Out</title></head><body>"
+      "<h2>Logged Out</h2>"
+      "<p>You have been logged out of OxySync.</p>"
+      "<p><a href='/'>Click here to log in again</a></p>"
+      "</body></html>");
 }
 
 // =====================
@@ -718,13 +728,13 @@ void setup() {
   Serial.println("WiFi AP started: " + String(ap_ssid));
   Serial.println("Dashboard: http://" + WiFi.softAPIP().toString());
 
-  server.on("/",         handleRoot);
-  server.on("/status",   handleStatus);
-  server.on("/calibrate",handleCalibrate);
-  server.on("/setsim",   handleSetSim);
-  server.on("/relay",    handleRelay);
-  server.on("/reboot",   handleReboot);
-  server.on("/logout",   handleLogout);
+  server.on("/", handleRoot);
+  server.on("/status", handleStatus);
+  server.on("/calibrate", handleCalibrate);
+  server.on("/setsim", handleSetSim);
+  server.on("/relay", handleRelay);
+  server.on("/reboot", handleReboot);
+  server.on("/logout", handleLogout);
 
   server.begin();
   Serial.println("Web server started.");
