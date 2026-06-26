@@ -18,7 +18,7 @@
 #define SCL_PIN 22
 
 // =====================
-// RELAY CONFIG (ACTIVE LOW)
+// RELAY CONFIG (ACTIVE HIGH — DFRobot MOSFET DFR0457)
 // =====================
 #define RELAY_PIN 27
 
@@ -118,16 +118,16 @@ String sendToSensor(const String& cmd, int delayAfter = 900) {
 }
 
 // =====================
-// RELAY CONTROL (ACTIVE LOW)
+// RELAY CONTROL (ACTIVE HIGH — DFRobot MOSFET DFR0457)
 // =====================
 void setRelay(bool on) {
   if (on) {
-    digitalWrite(RELAY_PIN, LOW);
+    digitalWrite(RELAY_PIN, HIGH);
     state.relayOn       = true;
     state.lockoutActive = false;
     state.lockoutStart  = 0;
   } else {
-    digitalWrite(RELAY_PIN, HIGH);
+    digitalWrite(RELAY_PIN, LOW);
     state.relayOn = false;
   }
 }
@@ -696,7 +696,7 @@ void setup() {
   Wire.begin(SDA_PIN, SCL_PIN);
 
   pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, HIGH); // OFF (active-low)
+  digitalWrite(RELAY_PIN, LOW); // OFF (active-high)
 
   WiFi.softAP(ap_ssid, ap_password);
   Serial.println("WiFi AP: " + String(ap_ssid));
