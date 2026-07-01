@@ -6,6 +6,9 @@
 // All relay logic, timers, dashboard, and lockout work exactly as
 // they will on real hardware. Only the sensor read is mocked.
 //
+// DRIFT TESTING: Use "Force Day" button or GET /testday to manually
+// commit a day boundary — no need to wait 24 real hours.
+//
 // DO NOT FLASH THIS TO REAL DEVICE. Use oxysync_production.ino.
 // =====================================================================
 
@@ -21,7 +24,7 @@
 #define SCL_PIN 22
 
 // =====================
-// RELAY CONFIG (ACTIVE LOW)
+// RELAY CONFIG (ACTIVE LOW — Wokwi LED wired 3V3→R→LED→GPIO27)
 // =====================
 #define RELAY_PIN 27
 
@@ -44,9 +47,6 @@ WebServer server(80);
 
 // =====================
 // WOKWI SIMULATION CONTROL
-// Toggle this to simulate different O2 levels for testing:
-//   < setpoint  → relay should activate
-//   >= setpoint → relay should deactivate + lockout starts
 // =====================
 float SIM_O2_VALUE = 19.5;
 
@@ -86,6 +86,99 @@ bool pendingReboot = false;
 unsigned long rebootAt = 0;
 
 // =====================
+// SENSOR DRIFT TRACKING
+// (RAM only — no NVS in Wokwi. Use /testday to simulate day boundaries.)
+// =====================
+const float DRIFT_CAUTION_PCT = 0.30f;
+const float DRIFT_REPLACE_PCT = 0.60f;
+
+#define SENSOR_COLLECTING 0
+#define SENSOR_OK         1
+#define SENSOR_CAUTION    2
+#define SENSOR_REPLACE    3
+
+struct DriftData {
+  float   daily[30];
+  uint8_t count;
+  uint8_t dayIndex;
+  float   refAvg;
+  bool    refSet;
+};
+
+DriftData driftData;
+
+float    driftDaySum     = 0.0f;
+uint16_t driftDaySamples = 0;
+unsigned long lastDayMs    = 0;
+float         currentDrift = 0.0f;
+uint8_t       sensorStatus = SENSOR_COLLECTING;
+
+const unsigned long DAY_MS = 86400000UL; // 24 hours (bypassed by /testday)
+
+void resetDrift() {
+  memset(&driftData, 0, sizeof(DriftData));
+  driftData.refSet = false;
+  driftDaySum      = 0.0f;
+  driftDaySamples  = 0;
+  currentDrift     = 0.0f;
+  sensorStatus     = SENSOR_COLLECTING;
+  Serial.println("[DRIFT] History reset after calibration.");
+}
+
+void recalcDriftStatus() {
+  if (!driftData.refSet || driftData.count < 2) {
+    sensorStatus = SENSOR_COLLECTING;
+    currentDrift = 0.0f;
+    return;
+  }
+  int recentDays = min((int)driftData.count, 3);
+  float recentSum = 0.0f;
+  for (int i = 0; i < recentDays; i++) {
+    int idx = ((int)driftData.dayIndex - 1 - i + 30) % 30;
+    recentSum += driftData.daily[idx];
+  }
+  float recentAvg = recentSum / recentDays;
+  currentDrift = recentAvg - driftData.refAvg;
+  float absDrift = fabs(currentDrift);
+  if      (absDrift >= DRIFT_REPLACE_PCT) sensorStatus = SENSOR_REPLACE;
+  else if (absDrift >= DRIFT_CAUTION_PCT) sensorStatus = SENSOR_CAUTION;
+  else                                    sensorStatus = SENSOR_OK;
+}
+
+// Commit the current day accumulator as a completed daily average.
+// Called by /testday button or automatically after DAY_MS.
+void commitDayBoundary() {
+  if (driftDaySamples == 0) {
+    Serial.println("[DRIFT][TEST] No samples — nothing committed.");
+    return;
+  }
+  float dayAvg = driftDaySum / driftDaySamples;
+  if (!driftData.refSet) {
+    driftData.refAvg = dayAvg;
+    driftData.refSet = true;
+  }
+  driftData.daily[driftData.dayIndex] = dayAvg;
+  driftData.dayIndex = (driftData.dayIndex + 1) % 30;
+  if (driftData.count < 30) driftData.count++;
+  recalcDriftStatus();
+  driftDaySum     = 0.0f;
+  driftDaySamples = 0;
+  lastDayMs       = millis();
+  Serial.println("[DRIFT] Day committed. Avg: " + String(dayAvg, 2) +
+                 "% | Drift: " + String(currentDrift, 2) +
+                 "% | Days: " + String(driftData.count));
+}
+
+void updateDriftTracking(float reading) {
+  driftDaySum += reading;
+  driftDaySamples++;
+  if (millis() - lastDayMs >= DAY_MS) {
+    lastDayMs = millis();
+    commitDayBoundary();
+  }
+}
+
+// =====================
 // AUTH CHECK
 // =====================
 bool checkAuth() {
@@ -97,7 +190,7 @@ bool checkAuth() {
 }
 
 // =====================
-// RELAY CONTROL (ACTIVE LOW)
+// RELAY CONTROL (ACTIVE LOW — Wokwi diagram wired so LED=ON when GPIO27=LOW)
 // =====================
 void setRelay(bool on) {
   if (on) {
@@ -153,7 +246,6 @@ void evaluateRelay() {
       Serial.println("[AUTO] O2 low — relay activated");
     }
   } else {
-    // Only start lockout if AUTO was the one that turned the relay on
     if (state.relayOn && state.relayAutoActive) {
       startLockout();
       Serial.println("[AUTO] O2 recovered — relay off, lockout started");
@@ -172,6 +264,7 @@ void readSensor() {
   state.o2Value = SIM_O2_VALUE;
   Serial.println("[SIM] O2 value: " + String(state.o2Value, 2) + "%");
   evaluateRelay();
+  updateDriftTracking(state.o2Value);
 }
 
 // =====================
@@ -204,10 +297,7 @@ const char index_html[] PROGMEM = R"rawliteral(
   --c-gray:   #64748b;
 }
 
-html, body {
-  height: 100%;
-  overflow: hidden;
-}
+html, body { height: 100%; overflow: hidden; }
 
 body {
   font-family: 'Segoe UI', system-ui, Arial, sans-serif;
@@ -230,163 +320,98 @@ header {
   flex-shrink: 0;
   border-bottom: 2px solid #152a45;
 }
-.header-left {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-.logo {
-  font-size: 19px;
-  font-weight: 800;
-  letter-spacing: 0.3px;
-  color: #ffffff;
-}
+.header-left { display: flex; align-items: baseline; gap: 10px; }
+.logo { font-size: 19px; font-weight: 800; letter-spacing: 0.3px; color: #ffffff; }
 .logo em { font-style: normal; color: #7dd3fc; }
-.header-sub {
-  font-size: 11px;
-  color: #93b8d8;
-  font-weight: 400;
-  letter-spacing: 0.3px;
-}
+.header-sub { font-size: 11px; color: #93b8d8; font-weight: 400; letter-spacing: 0.3px; }
 .status-pill {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.8px;
-  text-transform: uppercase;
-  color: #fcd34d;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.8px;
+  text-transform: uppercase; color: #fcd34d;
   background: rgba(252,211,77,0.12);
   border: 1px solid rgba(252,211,77,0.3);
-  padding: 4px 12px;
-  border-radius: 999px;
+  padding: 4px 12px; border-radius: 999px;
 }
 
 /* ── MAIN GRID ── */
 main {
-  flex: 1;
-  display: grid;
+  flex: 1; display: grid;
   grid-template-columns: 3fr 2fr;
-  gap: 14px;
-  padding: 14px;
-  overflow: hidden;
-  min-height: 0;
+  gap: 14px; padding: 14px;
+  overflow: hidden; min-height: 0;
 }
 
 /* ── PANELS ── */
-.panel {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 0;
-}
+.panel { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
 
 /* ── CARDS ── */
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 18px;
+  border-radius: 10px; padding: 14px 18px;
 }
-.card-fill {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
+.card-fill { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .card-label {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  color: var(--sub);
+  font-size: 9px; font-weight: 700;
+  letter-spacing: 2px; text-transform: uppercase; color: var(--sub);
 }
-.divider {
-  border: none;
-  border-top: 1px solid var(--divider);
-  margin: 10px 0;
-}
+.divider { border: none; border-top: 1px solid var(--divider); margin: 10px 0; }
 
 /* ── SIM BANNER ── */
 .sim-banner {
   background: rgba(217,119,6,0.08);
   border: 1px solid rgba(217,119,6,0.25);
-  border-radius: 7px;
-  padding: 7px 12px;
-  font-size: 10px;
-  font-weight: 600;
-  color: #92400e;
-  letter-spacing: 0.2px;
+  border-radius: 7px; padding: 7px 12px;
+  font-size: 10px; font-weight: 600; color: #92400e; letter-spacing: 0.2px;
 }
 
 /* ── O2 DISPLAY ── */
 .o2-section {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  flex: 1; display: flex;
+  flex-direction: column; align-items: center; justify-content: center;
 }
 .o2-number {
   font-size: clamp(64px, 9vw, 100px);
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: -3px;
-  color: var(--text);
+  font-weight: 800; line-height: 1;
+  letter-spacing: -3px; color: var(--text);
 }
 .o2-suffix {
-  font-size: clamp(20px, 2.5vw, 28px);
-  font-weight: 300;
-  color: var(--sub);
-  margin-left: 4px;
-  vertical-align: bottom;
-  position: relative;
-  bottom: 8px;
+  font-size: clamp(20px, 2.5vw, 28px); font-weight: 300;
+  color: var(--sub); margin-left: 4px;
+  vertical-align: bottom; position: relative; bottom: 8px;
 }
 .o2-caption {
-  font-size: 10px;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  color: var(--sub);
-  margin-top: 6px;
+  font-size: 10px; letter-spacing: 2px;
+  text-transform: uppercase; color: var(--sub); margin-top: 6px;
 }
 
 /* ── SETPOINT ROW ── */
 .sp-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 8px 14px;
-  margin-top: 10px;
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 7px; padding: 8px 14px; margin-top: 10px;
 }
 .sp-lbl { font-size: 11px; font-weight: 600; color: var(--sub); }
 .sp-val { font-size: 15px; font-weight: 700; color: var(--text); }
 
-/* ── STATUS ROW ── */
-.status-row {
+/* ── STATUS GRID (2x2) ── */
+.status-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 8px;
-  margin-top: 10px;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px; margin-top: 10px;
 }
 .stat {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 9px 6px;
-  text-align: center;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 7px; padding: 9px 6px; text-align: center;
 }
 .stat-lbl {
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  color: var(--sub);
-  margin-bottom: 5px;
+  font-size: 8px; font-weight: 700;
+  letter-spacing: 1.5px; text-transform: uppercase;
+  color: var(--sub); margin-bottom: 5px;
 }
 .stat-val { font-size: 13px; font-weight: 800; }
+.stat-sub { font-size: 9px; color: var(--sub); margin-top: 3px; }
 
+/* Status colors */
 .cv-red    { color: var(--c-red); }
 .cv-green  { color: var(--c-green); }
 .cv-amber  { color: var(--c-amber); }
@@ -396,10 +421,7 @@ main {
 
 /* ── SIM SLIDER ── */
 .sim-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
+  display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
 }
 .sim-row label { font-size: 11px; font-weight: 600; color: var(--sub); flex-shrink: 0; }
 .sim-row input[type=range] { flex: 1; accent-color: #92400e; cursor: pointer; }
@@ -412,16 +434,10 @@ main {
 .btn-group-1 { grid-template-columns: 1fr; }
 
 button {
-  padding: 10px 6px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  border: none;
-  border-radius: 7px;
-  cursor: pointer;
-  color: #fff;
-  transition: filter 0.12s, transform 0.08s;
-  white-space: nowrap;
+  padding: 10px 6px; font-size: 12px; font-weight: 700;
+  letter-spacing: 0.4px; border: none; border-radius: 7px;
+  cursor: pointer; color: #fff;
+  transition: filter 0.12s, transform 0.08s; white-space: nowrap;
 }
 button:active { transform: scale(0.97); }
 
@@ -430,6 +446,7 @@ button:active { transform: scale(0.97); }
 .b-blue   { background: #1e3a8a; }
 .b-amber  { background: #92400e; }
 .b-slate  { background: #374151; }
+.b-teal   { background: #0f766e; }
 .b-ghost  { background: transparent; color: var(--sub); border: 1px solid var(--border); }
 
 .b-red:hover    { filter: brightness(1.12); }
@@ -437,6 +454,7 @@ button:active { transform: scale(0.97); }
 .b-blue:hover   { filter: brightness(1.15); }
 .b-amber:hover  { filter: brightness(1.12); }
 .b-slate:hover  { filter: brightness(1.15); }
+.b-teal:hover   { filter: brightness(1.12); }
 .b-ghost:hover  { color: var(--text); border-color: var(--sub); }
 </style>
 </head>
@@ -473,7 +491,7 @@ button:active { transform: scale(0.97); }
         <span class="sp-val"><span id="sp">--</span>%</span>
       </div>
 
-      <div class="status-row">
+      <div class="status-grid">
         <div class="stat">
           <div class="stat-lbl">Relay</div>
           <div class="stat-val" id="relay">--</div>
@@ -485,6 +503,11 @@ button:active { transform: scale(0.97); }
         <div class="stat">
           <div class="stat-lbl">Lockout</div>
           <div class="stat-val" id="lock">--</div>
+        </div>
+        <div class="stat">
+          <div class="stat-lbl">Sensor</div>
+          <div class="stat-val" id="sensorSt">--</div>
+          <div class="stat-sub" id="sensorSub">--</div>
         </div>
       </div>
     </div>
@@ -502,8 +525,9 @@ button:active { transform: scale(0.97); }
                oninput="document.getElementById('simNum').innerText=parseFloat(this.value).toFixed(1)+'%'">
         <span class="sim-num" id="simNum">19.5%</span>
       </div>
-      <div class="btn-group btn-group-1">
+      <div class="btn-group btn-group-2">
         <button class="b-amber" onclick="setSimO2()">&#9654; Apply Value</button>
+        <button class="b-teal"  onclick="forceDay()">&#8987; Force Day</button>
       </div>
     </div>
 
@@ -521,7 +545,7 @@ button:active { transform: scale(0.97); }
       <div class="card-label">Sensor</div>
       <hr class="divider">
       <div class="btn-group btn-group-1">
-        <button class="b-amber" onclick="calibrate()">&#9672; Calibrate Sensor</button>
+        <button class="b-amber" onclick="calibrate()">&#9672; Calibrate &amp; Reset Drift</button>
       </div>
     </div>
 
@@ -564,8 +588,33 @@ function update() {
         lck.innerText = 'None';
         lck.className = 'stat-val cv-gray';
       }
+
+      var sns = document.getElementById('sensorSt');
+      var sub = document.getElementById('sensorSub');
+      var st  = d.sensorSt;
+      if (st === 0) {
+        sns.innerText = 'COLLECT';
+        sns.className = 'stat-val cv-gray';
+        sub.innerText = d.driftDays + 'd data';
+      } else if (st === 1) {
+        sns.innerText = 'OK';
+        sns.className = 'stat-val cv-green';
+        sub.innerText = drift(d.driftPct) + ' / ' + d.driftDays + 'd';
+      } else if (st === 2) {
+        sns.innerText = 'CAUTION';
+        sns.className = 'stat-val cv-amber';
+        sub.innerText = drift(d.driftPct) + ' — recal.';
+      } else {
+        sns.innerText = 'REPLACE';
+        sns.className = 'stat-val cv-red';
+        sub.innerText = drift(d.driftPct) + ' — replace';
+      }
     })
     .catch(function() {});
+}
+
+function drift(v) {
+  return (v >= 0 ? '+' : '') + parseFloat(v).toFixed(2) + '%';
 }
 
 function setSimO2() {
@@ -575,10 +624,17 @@ function setSimO2() {
     .then(function() { update(); });
 }
 
+function forceDay() {
+  fetch('/testday')
+    .then(function(r) { return r.text(); })
+    .then(function(t) { alert(t); update(); });
+}
+
 function calibrate() {
+  if (!confirm('Calibrate sensor? This will also reset drift history.')) return;
   fetch('/calibrate')
     .then(function(r) { return r.text(); })
-    .then(function(t) { alert(t); });
+    .then(function(t) { alert(t); update(); });
 }
 
 function relayOn()   { fetch('/relay?state=on').then(update); }
@@ -605,9 +661,7 @@ function rebootController() {
   setTimeout(pollBack, 5000);
 }
 
-function logout() {
-  window.location.href = '/logout';
-}
+function logout() { window.location.href = '/logout'; }
 
 setInterval(update, 2000);
 update();
@@ -631,11 +685,14 @@ void handleStatus() {
     return;
 
   String json = "{";
-  json += "\"o2\":" + String(state.o2Value, 2) + ",";
-  json += "\"setpoint\":" + String(state.setpoint, 2) + ",";
-  json += "\"relay\":" + String(state.relayOn ? "true" : "false") + ",";
-  json += "\"lockout\":" + String(lockoutRemaining() / 1000) + ",";
-  json += "\"manual\":" + String(state.manualOverride ? "true" : "false");
+  json += "\"o2\":"        + String(state.o2Value, 2)                        + ",";
+  json += "\"setpoint\":"  + String(state.setpoint, 2)                       + ",";
+  json += "\"relay\":"     + String(state.relayOn ? "true" : "false")        + ",";
+  json += "\"lockout\":"   + String(lockoutRemaining() / 1000)               + ",";
+  json += "\"manual\":"    + String(state.manualOverride ? "true" : "false") + ",";
+  json += "\"sensorSt\":"  + String(sensorStatus)                            + ",";
+  json += "\"driftPct\":"  + String(currentDrift, 2)                         + ",";
+  json += "\"driftDays\":" + String(driftData.count);
   json += "}";
 
   server.send(200, "application/json", json);
@@ -644,9 +701,10 @@ void handleStatus() {
 void handleCalibrate() {
   if (!checkAuth())
     return;
+  resetDrift();
   server.send(200, "text/plain",
-              "[SIM] Calibration command sent. Reading: " +
-                  String(state.o2Value, 2) + "%");
+    "[SIM] Calibration complete. Drift history reset. Reading: " +
+    String(state.o2Value, 2) + "%");
 }
 
 // Wokwi-only: set the simulated O2 value from the browser
@@ -656,11 +714,33 @@ void handleSetSim() {
   if (server.hasArg("o2")) {
     SIM_O2_VALUE = server.arg("o2").toFloat();
     Serial.println("[SIM] O2 value set to: " + String(SIM_O2_VALUE, 2) + "%");
-    server.send(200, "text/plain",
-                "SIM O2 set to " + String(SIM_O2_VALUE, 2) + "%");
+    server.send(200, "text/plain", "SIM O2 set to " + String(SIM_O2_VALUE, 2) + "%");
   } else {
     server.send(400, "text/plain", "Missing ?o2= parameter");
   }
+}
+
+// Wokwi-only: manually commit a day boundary to test drift tracking
+void handleTestDay() {
+  if (!checkAuth())
+    return;
+  if (driftDaySamples == 0) {
+    server.send(200, "text/plain",
+      "[SIM] No readings collected yet — wait for at least one sensor read (10s) then try again.");
+    return;
+  }
+  commitDayBoundary();
+  String msg = "[SIM] Day " + String(driftData.count) + " committed.";
+  if (driftData.count < 2) {
+    msg += " (Baseline set) Need 1+ more day for drift status.";
+  } else {
+    msg += " Drift: " + String(currentDrift, 2) + "% | Status: ";
+    if      (sensorStatus == SENSOR_OK)      msg += "OK";
+    else if (sensorStatus == SENSOR_CAUTION) msg += "CAUTION";
+    else if (sensorStatus == SENSOR_REPLACE) msg += "REPLACE";
+    else                                     msg += "COLLECTING";
+  }
+  server.send(200, "text/plain", msg);
 }
 
 void handleRelay() {
@@ -724,17 +804,22 @@ void setup() {
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, HIGH); // OFF (active-low)
 
+  memset(&driftData, 0, sizeof(DriftData));
+  lastDayMs = millis();
+
   WiFi.softAP(ap_ssid, ap_password);
   Serial.println("WiFi AP started: " + String(ap_ssid));
   Serial.println("Dashboard: http://" + WiFi.softAPIP().toString());
+  Serial.println("[DRIFT] Drift tracking ready. Use 'Force Day' button to test.");
 
-  server.on("/", handleRoot);
-  server.on("/status", handleStatus);
-  server.on("/calibrate", handleCalibrate);
-  server.on("/setsim", handleSetSim);
-  server.on("/relay", handleRelay);
-  server.on("/reboot", handleReboot);
-  server.on("/logout", handleLogout);
+  server.on("/",         handleRoot);
+  server.on("/status",   handleStatus);
+  server.on("/calibrate",handleCalibrate);
+  server.on("/setsim",   handleSetSim);
+  server.on("/testday",  handleTestDay);
+  server.on("/relay",    handleRelay);
+  server.on("/reboot",   handleReboot);
+  server.on("/logout",   handleLogout);
 
   server.begin();
   Serial.println("Web server started.");

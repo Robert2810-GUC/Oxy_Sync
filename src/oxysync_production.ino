@@ -9,6 +9,7 @@
 #include <Wire.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <Preferences.h>
 #include <esp_task_wdt.h>
 
 // =====================
@@ -38,7 +39,8 @@ const char* www_pass = "oxygen";
 // =====================
 // GLOBAL OBJECTS
 // =====================
-WebServer server(80);
+WebServer   server(80);
+Preferences prefs;
 
 // =====================
 // SYSTEM STATE
@@ -84,6 +86,124 @@ unsigned long rebootAt = 0;
 char o2_concentration[32];
 
 // =====================
+// SENSOR DRIFT TRACKING
+// =====================
+const float DRIFT_CAUTION_PCT = 0.30f; // ±0.3% — recalibrate soon
+const float DRIFT_REPLACE_PCT = 0.60f; // ±0.6% — replace sensor
+
+#define SENSOR_COLLECTING 0
+#define SENSOR_OK         1
+#define SENSOR_CAUTION    2
+#define SENSOR_REPLACE    3
+
+// Only completed daily averages and the reference are persisted to NVS.
+// Mid-day accumulators live in RAM and reset naturally on reboot.
+struct DriftData {
+  float   daily[30];  // circular buffer of daily O2 averages
+  uint8_t count;      // how many daily slots are filled (0–30)
+  uint8_t dayIndex;   // next write position
+  float   refAvg;     // first day's average — baseline after calibration
+  bool    refSet;     // whether the reference has been established
+};
+
+DriftData driftData;
+
+float    driftDaySum     = 0.0f;  // accumulator for current partial day
+uint16_t driftDaySamples = 0;     // samples counted today
+
+unsigned long lastDayMs    = 0;
+float         currentDrift = 0.0f;
+uint8_t       sensorStatus = SENSOR_COLLECTING;
+
+const unsigned long DAY_MS = 86400000UL; // 24 hours
+
+void loadDrift() {
+  prefs.begin("oxysync", false);
+  size_t len = prefs.getBytesLength("drift");
+  if (len == sizeof(DriftData)) {
+    prefs.getBytes("drift", &driftData, sizeof(DriftData));
+  } else {
+    memset(&driftData, 0, sizeof(DriftData));
+    driftData.refSet = false;
+  }
+  prefs.end();
+}
+
+void saveDrift() {
+  prefs.begin("oxysync", false);
+  prefs.putBytes("drift", &driftData, sizeof(DriftData));
+  prefs.end();
+}
+
+void resetDrift() {
+  memset(&driftData, 0, sizeof(DriftData));
+  driftData.refSet = false;
+  driftDaySum      = 0.0f;
+  driftDaySamples  = 0;
+  currentDrift     = 0.0f;
+  sensorStatus     = SENSOR_COLLECTING;
+  saveDrift();
+  Serial.println("[DRIFT] History reset after calibration.");
+}
+
+void recalcDriftStatus() {
+  if (!driftData.refSet || driftData.count < 2) {
+    sensorStatus = SENSOR_COLLECTING;
+    currentDrift = 0.0f;
+    return;
+  }
+
+  // Average of the most recent 3 completed days (or fewer if not enough data)
+  int recentDays = min((int)driftData.count, 3);
+  float recentSum = 0.0f;
+  for (int i = 0; i < recentDays; i++) {
+    int idx = ((int)driftData.dayIndex - 1 - i + 30) % 30;
+    recentSum += driftData.daily[idx];
+  }
+  float recentAvg = recentSum / recentDays;
+
+  currentDrift = recentAvg - driftData.refAvg;
+  float absDrift = fabs(currentDrift);
+
+  if      (absDrift >= DRIFT_REPLACE_PCT) sensorStatus = SENSOR_REPLACE;
+  else if (absDrift >= DRIFT_CAUTION_PCT) sensorStatus = SENSOR_CAUTION;
+  else                                    sensorStatus = SENSOR_OK;
+}
+
+void updateDriftTracking(float reading) {
+  driftDaySum += reading;
+  driftDaySamples++;
+
+  if (millis() - lastDayMs >= DAY_MS) {
+    lastDayMs = millis();
+
+    if (driftDaySamples > 0) {
+      float dayAvg = driftDaySum / driftDaySamples;
+
+      // First completed day becomes the reference baseline
+      if (!driftData.refSet) {
+        driftData.refAvg = dayAvg;
+        driftData.refSet = true;
+      }
+
+      driftData.daily[driftData.dayIndex] = dayAvg;
+      driftData.dayIndex = (driftData.dayIndex + 1) % 30;
+      if (driftData.count < 30) driftData.count++;
+
+      recalcDriftStatus();
+      saveDrift();
+
+      Serial.println("[DRIFT] Day average: " + String(dayAvg, 2) +
+                     "% | Drift: " + String(currentDrift, 2) +
+                     "% | Days: " + String(driftData.count));
+    }
+
+    driftDaySum     = 0.0f;
+    driftDaySamples = 0;
+  }
+}
+
+// =====================
 // AUTH CHECK
 // =====================
 bool checkAuth() {
@@ -105,7 +225,7 @@ String sendToSensor(const String& cmd, int delayAfter = 900) {
 
   delay(delayAfter);
 
-  int len = Wire.requestFrom(EZO_O2_ADDRESS, sizeof(o2_concentration) - 1);
+  Wire.requestFrom(EZO_O2_ADDRESS, sizeof(o2_concentration) - 1);
   int index = 0;
 
   while (Wire.available() && index < (int)sizeof(o2_concentration) - 1) {
@@ -204,6 +324,7 @@ void readSensor() {
   Serial.println("O2: " + String(state.o2Value, 2) + "%");
 
   evaluateRelay();
+  updateDriftTracking(val);
 }
 
 // =====================
@@ -236,10 +357,7 @@ const char index_html[] PROGMEM = R"rawliteral(
   --c-gray:   #64748b;
 }
 
-html, body {
-  height: 100%;
-  overflow: hidden;
-}
+html, body { height: 100%; overflow: hidden; }
 
 body {
   font-family: 'Segoe UI', system-ui, Arial, sans-serif;
@@ -262,160 +380,90 @@ header {
   flex-shrink: 0;
   border-bottom: 2px solid #152a45;
 }
-.header-left {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-.logo {
-  font-size: 19px;
-  font-weight: 800;
-  letter-spacing: 0.3px;
-  color: #ffffff;
-}
-.logo em {
-  font-style: normal;
-  color: #7dd3fc;
-}
-.header-sub {
-  font-size: 11px;
-  color: #93b8d8;
-  font-weight: 400;
-  letter-spacing: 0.3px;
-}
+.header-left { display: flex; align-items: baseline; gap: 10px; }
+.logo { font-size: 19px; font-weight: 800; letter-spacing: 0.3px; color: #fff; }
+.logo em { font-style: normal; color: #7dd3fc; }
+.header-sub { font-size: 11px; color: #93b8d8; font-weight: 400; }
 .status-pill {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.8px;
-  text-transform: uppercase;
-  color: #86efac;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.8px;
+  text-transform: uppercase; color: #86efac;
   background: rgba(134,239,172,0.12);
   border: 1px solid rgba(134,239,172,0.25);
-  padding: 4px 12px;
-  border-radius: 999px;
+  padding: 4px 12px; border-radius: 999px;
 }
 
 /* ── MAIN GRID ── */
 main {
-  flex: 1;
-  display: grid;
+  flex: 1; display: grid;
   grid-template-columns: 3fr 2fr;
-  gap: 14px;
-  padding: 14px;
-  overflow: hidden;
-  min-height: 0;
+  gap: 14px; padding: 14px;
+  overflow: hidden; min-height: 0;
 }
 
 /* ── PANELS ── */
-.panel {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 0;
-}
+.panel { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
 
 /* ── CARDS ── */
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px 18px;
+  border-radius: 10px; padding: 16px 18px;
 }
-.card-fill {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
+.card-fill { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .card-label {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  color: var(--sub);
-  margin-bottom: 0;
+  font-size: 9px; font-weight: 700;
+  letter-spacing: 2px; text-transform: uppercase; color: var(--sub);
 }
-.divider {
-  border: none;
-  border-top: 1px solid var(--divider);
-  margin: 12px 0;
-}
+.divider { border: none; border-top: 1px solid var(--divider); margin: 12px 0; }
 
 /* ── O2 DISPLAY ── */
 .o2-section {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  flex: 1; display: flex;
+  flex-direction: column; align-items: center; justify-content: center;
 }
 .o2-number {
   font-size: clamp(72px, 10vw, 108px);
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: -3px;
-  color: var(--text);
+  font-weight: 800; line-height: 1;
+  letter-spacing: -3px; color: var(--text);
 }
 .o2-suffix {
-  font-size: clamp(22px, 3vw, 32px);
-  font-weight: 300;
-  color: var(--sub);
-  margin-left: 4px;
-  vertical-align: bottom;
-  position: relative;
-  bottom: 10px;
+  font-size: clamp(22px, 3vw, 32px); font-weight: 300;
+  color: var(--sub); margin-left: 4px;
+  vertical-align: bottom; position: relative; bottom: 10px;
 }
 .o2-caption {
-  font-size: 10px;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  color: var(--sub);
-  margin-top: 6px;
+  font-size: 10px; letter-spacing: 2px;
+  text-transform: uppercase; color: var(--sub); margin-top: 6px;
 }
 
 /* ── SETPOINT ROW ── */
 .sp-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 9px 14px;
-  margin-top: 10px;
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 7px; padding: 9px 14px; margin-top: 10px;
 }
-.sp-lbl { font-size: 11px; font-weight: 600; color: var(--sub); letter-spacing: 0.3px; }
+.sp-lbl { font-size: 11px; font-weight: 600; color: var(--sub); }
 .sp-val { font-size: 16px; font-weight: 700; color: var(--text); }
 
-/* ── STATUS ROW ── */
-.status-row {
+/* ── STATUS GRID (2x2) ── */
+.status-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 8px;
-  margin-top: 10px;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px; margin-top: 10px;
 }
 .stat {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 10px 6px;
-  text-align: center;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 7px; padding: 10px 8px; text-align: center;
 }
 .stat-lbl {
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  color: var(--sub);
-  margin-bottom: 5px;
+  font-size: 8px; font-weight: 700;
+  letter-spacing: 1.5px; text-transform: uppercase;
+  color: var(--sub); margin-bottom: 5px;
 }
-.stat-val {
-  font-size: 13px;
-  font-weight: 800;
-  letter-spacing: 0.2px;
-}
+.stat-val { font-size: 13px; font-weight: 800; letter-spacing: 0.2px; }
+.stat-sub { font-size: 9px; color: var(--sub); margin-top: 3px; }
 
-/* Status value colours */
+/* Status colors */
 .cv-red    { color: var(--c-red); }
 .cv-green  { color: var(--c-green); }
 .cv-amber  { color: var(--c-amber); }
@@ -424,25 +472,16 @@ main {
 .cv-gray   { color: var(--c-gray); }
 
 /* ── BUTTONS ── */
-.btn-group {
-  display: grid;
-  gap: 8px;
-}
+.btn-group { display: grid; gap: 8px; }
 .btn-group-3 { grid-template-columns: 1fr 1fr 1fr; }
 .btn-group-2 { grid-template-columns: 1fr 1fr; }
 .btn-group-1 { grid-template-columns: 1fr; }
 
 button {
-  padding: 11px 6px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  border: none;
-  border-radius: 7px;
-  cursor: pointer;
-  color: #fff;
-  transition: filter 0.12s, transform 0.08s;
-  white-space: nowrap;
+  padding: 11px 6px; font-size: 12px; font-weight: 700;
+  letter-spacing: 0.4px; border: none; border-radius: 7px;
+  cursor: pointer; color: #fff;
+  transition: filter 0.12s, transform 0.08s; white-space: nowrap;
 }
 button:active { transform: scale(0.97); }
 
@@ -490,7 +529,7 @@ button:active { transform: scale(0.97); }
         <span class="sp-val"><span id="sp">--</span>%</span>
       </div>
 
-      <div class="status-row">
+      <div class="status-grid">
         <div class="stat">
           <div class="stat-lbl">Relay</div>
           <div class="stat-val" id="relay">--</div>
@@ -502,6 +541,11 @@ button:active { transform: scale(0.97); }
         <div class="stat">
           <div class="stat-lbl">Lockout</div>
           <div class="stat-val" id="lock">--</div>
+        </div>
+        <div class="stat">
+          <div class="stat-lbl">Sensor</div>
+          <div class="stat-val" id="sensorSt">--</div>
+          <div class="stat-sub" id="sensorSub">--</div>
         </div>
       </div>
     </div>
@@ -524,7 +568,7 @@ button:active { transform: scale(0.97); }
       <div class="card-label">Sensor</div>
       <hr class="divider">
       <div class="btn-group btn-group-1">
-        <button class="b-amber" onclick="calibrate()">&#9672; Calibrate Sensor</button>
+        <button class="b-amber" onclick="calibrate()">&#9672; Calibrate &amp; Reset Drift</button>
       </div>
     </div>
 
@@ -550,12 +594,12 @@ function update() {
       document.getElementById('sp').innerText = d.setpoint.toFixed(2);
 
       var rel = document.getElementById('relay');
-      rel.innerText   = d.relay ? 'ON' : 'OFF';
-      rel.className   = 'stat-val ' + (d.relay ? 'cv-red' : 'cv-green');
+      rel.innerText = d.relay ? 'ON' : 'OFF';
+      rel.className = 'stat-val ' + (d.relay ? 'cv-red' : 'cv-green');
 
       var mod = document.getElementById('mode');
-      mod.innerText   = d.manual ? 'MANUAL' : 'AUTO';
-      mod.className   = 'stat-val ' + (d.manual ? 'cv-amber' : 'cv-blue');
+      mod.innerText = d.manual ? 'MANUAL' : 'AUTO';
+      mod.className = 'stat-val ' + (d.manual ? 'cv-amber' : 'cv-blue');
 
       var lck = document.getElementById('lock');
       if (d.lockout > 0) {
@@ -567,14 +611,40 @@ function update() {
         lck.innerText = 'None';
         lck.className = 'stat-val cv-gray';
       }
+
+      var sns = document.getElementById('sensorSt');
+      var sub = document.getElementById('sensorSub');
+      var st  = d.sensorSt;
+      if (st === 0) {
+        sns.innerText = 'COLLECT';
+        sns.className = 'stat-val cv-gray';
+        sub.innerText = d.driftDays + 'd data';
+      } else if (st === 1) {
+        sns.innerText = 'OK';
+        sns.className = 'stat-val cv-green';
+        sub.innerText = drift(d.driftPct) + ' / ' + d.driftDays + 'd';
+      } else if (st === 2) {
+        sns.innerText = 'CAUTION';
+        sns.className = 'stat-val cv-amber';
+        sub.innerText = drift(d.driftPct) + ' — recal.';
+      } else {
+        sns.innerText = 'REPLACE';
+        sns.className = 'stat-val cv-red';
+        sub.innerText = drift(d.driftPct) + ' — replace';
+      }
     })
     .catch(function() {});
 }
 
+function drift(v) {
+  return (v >= 0 ? '+' : '') + parseFloat(v).toFixed(2) + '%';
+}
+
 function calibrate() {
+  if (!confirm('Calibrate sensor? This will also reset drift history.')) return;
   fetch('/calibrate')
     .then(function(r) { return r.text(); })
-    .then(function(t) { alert(t); });
+    .then(function(t) { alert(t); update(); });
 }
 
 function relayOn()   { fetch('/relay?state=on').then(update); }
@@ -584,7 +654,7 @@ function relayAuto() { fetch('/relay?state=auto').then(update); }
 function rebootController() {
   if (!confirm('Reboot the controller?')) return;
   document.body.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100vh;background:#eef2f7;font-family:Segoe UI,Arial,sans-serif;color:#1c3557;flex-direction:column;gap:12px;';
-  document.body.innerHTML = '<div style="font-size:36px;color:#1c3557;">&#8635;</div><h2 style="font-size:18px;font-weight:700;">Rebooting&#8230;</h2><p style="color:#5b718a;font-size:13px;">Please wait. Page will reload automatically.</p>';
+  document.body.innerHTML = '<div style="font-size:36px;">&#8635;</div><h2 style="font-size:18px;font-weight:700;">Rebooting&#8230;</h2><p style="color:#5b718a;font-size:13px;">Please wait. Page will reload automatically.</p>';
   fetch('/reboot').catch(function(){});
   var attempts = 0;
   function pollBack() {
@@ -601,9 +671,7 @@ function rebootController() {
   setTimeout(pollBack, 5000);
 }
 
-function logout() {
-  window.location.href = '/logout';
-}
+function logout() { window.location.href = '/logout'; }
 
 setInterval(update, 2000);
 update();
@@ -625,11 +693,14 @@ void handleStatus() {
   if (!checkAuth()) return;
 
   String json = "{";
-  json += "\"o2\":"       + String(state.o2Value, 2)   + ",";
-  json += "\"setpoint\":" + String(state.setpoint, 2)  + ",";
-  json += "\"relay\":"    + String(state.relayOn ? "true" : "false") + ",";
-  json += "\"lockout\":"  + String(lockoutRemaining() / 1000)        + ",";
-  json += "\"manual\":"   + String(state.manualOverride ? "true" : "false");
+  json += "\"o2\":"        + String(state.o2Value, 2)                         + ",";
+  json += "\"setpoint\":"  + String(state.setpoint, 2)                        + ",";
+  json += "\"relay\":"     + String(state.relayOn ? "true" : "false")         + ",";
+  json += "\"lockout\":"   + String(lockoutRemaining() / 1000)                + ",";
+  json += "\"manual\":"    + String(state.manualOverride ? "true" : "false")  + ",";
+  json += "\"sensorSt\":"  + String(sensorStatus)                             + ",";
+  json += "\"driftPct\":"  + String(currentDrift, 2)                          + ",";
+  json += "\"driftDays\":" + String(driftData.count);
   json += "}";
 
   server.send(200, "application/json", json);
@@ -640,7 +711,8 @@ void handleCalibrate() {
   sendToSensor("CAL,20.9", 2500);
   delay(1500);
   String verify = sendToSensor("R", 900);
-  server.send(200, "text/plain", "Calibration sent. Reading: " + verify);
+  resetDrift();
+  server.send(200, "text/plain", "Calibration sent. Drift history reset. Reading: " + verify);
 }
 
 void handleRelay() {
@@ -699,15 +771,20 @@ void setup() {
   Serial.begin(115200);
   Wire.begin(SDA_PIN, SCL_PIN);
 
-  esp_task_wdt_init(WDT_TIMEOUT_SEC, true); // true = panic/reboot on timeout
-  esp_task_wdt_add(NULL);                   // watch the main loop task
+  esp_task_wdt_init(WDT_TIMEOUT_SEC, true);
+  esp_task_wdt_add(NULL);
 
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, LOW); // OFF (active-high)
 
+  loadDrift();
+  lastDayMs = millis();
+  recalcDriftStatus();
+
   WiFi.softAP(ap_ssid, ap_password);
   Serial.println("WiFi AP: " + String(ap_ssid));
   Serial.println("Dashboard: http://" + WiFi.softAPIP().toString());
+  Serial.println("Drift days loaded: " + String(driftData.count));
 
   server.on("/",          handleRoot);
   server.on("/status",    handleStatus);

@@ -14,7 +14,7 @@
 **Hardware:**
 - Microcontroller: ESP32 Devkit V1
 - Sensor: Atlas Scientific ENO-02 (EZO O2, I2C address 0x6C)
-- Relay: Active-low on GPIO 27
+- Relay: Active-high on GPIO 27 (DFRobot MOSFET DFR0457)
 - Access: WiFi AP (`O2_Controller` / `techonly123`), browser at `192.168.4.1`
 - Dashboard login: `tech` / `oxygen`
 
@@ -93,8 +93,8 @@ Fred answered all 6 clarification questions:
 - [x] Fix logout / re-login flow
 
 ### Priority 2 — Major New Features
-- [ ] **Watchdog Timer** — hardware-level recovery if MCU or sensor locks up
-- [ ] **Sensor Drift Tracking** — log readings over time, flag sensor for replacement
+- [x] **Watchdog Timer** — DONE: `esp_task_wdt_init(30s, panic=true)` in setup, `esp_task_wdt_reset()` fed every loop. Reboots on any 30s stall.
+- [x] **Sensor Drift Tracking** — DONE: 30-day circular buffer of daily averages in NVS (`Preferences`). ±0.3% CAUTION, ±0.6% REPLACE. Wokwi has `/testday` + "Force Day" button to test without waiting 24h. Calibrate resets history.
 - [ ] **Live Sensor Status** — display on dashboard: OK / Disconnected / Stuck / Sleeping
 - [ ] **Event Log** — timestamped log of relay changes, lockouts, calibrations, reboots (persist 30 days, survives reboot)
 
@@ -118,7 +118,7 @@ Fred answered all 6 clarification questions:
 
 - `Sensor script_new.txt` is the reference for real I2C reads — it uses `sendToSensor("R", 900)` with 900ms delay vs the safety code's 1200ms delay. The new version uses `isPrintable()` for filtering.
 - Event log needs persistent storage → likely NVS (Non-Volatile Storage) or SPIFFS/LittleFS on ESP32
-- Watchdog: ESP32 has a built-in hardware watchdog — needs to be enabled and fed properly
+- Watchdog: DONE — using `esp_task_wdt` (ESP-IDF API). 30s timeout, panic=true forces clean reboot. `esp_task_wdt_reset()` called at top of every `loop()` iteration.
 - Sensor drift: Atlas Scientific EZO O2 datasheet should define accuracy/tolerance — monitor trend over time (e.g., ±0.5% drift over 7 days as threshold)
 - Logout bug: HTTP Basic Auth on ESP32/WebServer doesn't have a clean logout mechanism — workaround needed (e.g., fake credentials challenge)
 
@@ -126,9 +126,9 @@ Fred answered all 6 clarification questions:
 
 ## Current Status
 
-**Waiting for Fred's feedback on bug-fix + UI release (sent ~Jun 19, 2026)**
-- P2 features on hold until client confirms the bug fixes work on real hardware
-- This also establishes how Fred reports issues — useful before adding bigger features
+**Sensor Drift Tracking complete (production + Wokwi). 2 P2 features remaining.**
+- Waiting for Fred's feedback on bug-fix build before sending new features
+- Bharat independently added: relay polarity fix (active-high, DFR0457) + Watchdog Timer + Sensor Drift Tracking
 
 ## Open Questions / Next Steps
 
@@ -148,4 +148,5 @@ Fred answered all 6 clarification questions:
 | Jun 19, 2026 | Claude | Bharat | All 3 P1 bugs fixed in both production and Wokwi firmware |
 | Jun 19, 2026 | Claude | Bharat | UI redesigned v2 — two-column no-scroll layout, navy/white formal palette, full-width, color only on status values |
 | Jun 19, 2026 | Bharat | Fred   | Sent production firmware for client testing — bug fixes + UI redesign. P2 features on hold pending feedback. |
+| Jun 19, 2026 | Claude | Bharat | Sensor Drift Tracking complete in both production and Wokwi. Wokwi adds /testday + "Force Day" button for testing. |
 
