@@ -11,6 +11,7 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <esp_task_wdt.h>
+#include <esp_idf_version.h>
 
 // =====================
 // SENSOR CONFIG
@@ -771,7 +772,19 @@ void setup() {
   Serial.begin(115200);
   Wire.begin(SDA_PIN, SCL_PIN);
 
+  // Watchdog init — API changed in ESP-IDF v5 (Arduino core v3)
+#if ESP_IDF_VERSION_MAJOR >= 5
+  {
+    esp_task_wdt_config_t wdt_cfg = {
+      .timeout_ms    = WDT_TIMEOUT_SEC * 1000,
+      .idle_core_mask = 0,
+      .trigger_panic = true
+    };
+    esp_task_wdt_reconfigure(&wdt_cfg);
+  }
+#else
   esp_task_wdt_init(WDT_TIMEOUT_SEC, true);
+#endif
   esp_task_wdt_add(NULL);
 
   pinMode(RELAY_PIN, OUTPUT);
