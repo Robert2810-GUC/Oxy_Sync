@@ -95,8 +95,8 @@ Fred answered all 6 clarification questions:
 ### Priority 2 — Major New Features
 - [x] **Watchdog Timer** — DONE: `esp_task_wdt_init(30s, panic=true)` in setup, `esp_task_wdt_reset()` fed every loop. Reboots on any 30s stall.
 - [x] **Sensor Drift Tracking** — DONE: 30-day circular buffer of daily averages in NVS (`Preferences`). ±0.3% CAUTION, ±0.6% REPLACE. Wokwi has `/testday` + "Force Day" button to test without waiting 24h. Calibrate resets history.
-- [ ] **Live Sensor Status** — display on dashboard: OK / Disconnected / Stuck / Sleeping
-- [ ] **Event Log** — timestamped log of relay changes, lockouts, calibrations, reboots (persist 30 days, survives reboot)
+- [x] **Live Sensor Status** — DONE: codes 4=Disconnected, 5=Stuck, 6=Sleeping in dashboard. Disconnection detected via I2C endTransmission() error. Stuck = same reading 6+ reads (~1 min).
+- [x] **Event Log** — DONE: LittleFS /log.txt, max 300 entries (trimmed to 200). Browser auto-syncs Unix time on every load. /logpage shows colour-coded table. /clearlog to wipe. Survives reboot via 10-min NVS timebase save.
 
 ---
 
@@ -126,7 +126,7 @@ Fred answered all 6 clarification questions:
 
 ## Current Status
 
-**Sensor Drift Tracking complete (production + Wokwi). 2 P2 features remaining.**
+**ALL P2 FEATURES COMPLETE. Awaiting Fred's feedback on current build.**
 - Waiting for Fred's feedback on bug-fix build before sending new features
 - Bharat independently added: relay polarity fix (active-high, DFR0457) + Watchdog Timer + Sensor Drift Tracking
 
