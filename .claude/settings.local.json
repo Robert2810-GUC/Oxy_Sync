@@ -5,7 +5,11 @@
       "WebFetch(domain:www.dfrobot.com)",
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
-      "Bash(arduino-cli version *)"
+      "Bash(arduino-cli version *)",
+      "Bash(python -c \"import docx; print\\('docx ok'\\)\")",
+      "Bash(python *)",
+      "Bash(pip install *)",
+      "Bash(git rm *)"
     ]
   }
 }

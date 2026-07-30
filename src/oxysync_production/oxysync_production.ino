@@ -1,6 +1,5 @@
 // =====================================================================
 // OxySync — PRODUCTION VERSION
-// Megasoft | Client: Fred Faiz
 //
 // For real hardware: ESP32 Devkit V1 + Atlas Scientific ENO-02 (I2C)
 // Flash this version to the actual device.
